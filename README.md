@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="WrapSplashPHP" width="600">
+</p>
+
 # WrapSplashPHP v1.0.0
 
 A simple, synchronous API wrapper for the popular [Unsplash](https://unsplash.com/) platform, written in **PHP**. This is a direct port of [WrapSplashTS](https://github.com/SandeepVattapparambil/wrapsplash) for the PHP ecosystem.
