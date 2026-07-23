@@ -6,27 +6,20 @@ namespace SandeepV\WrapsplashPHP;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
-use GuzzleHttp\HandlerStack;
-use GuzzleHttp\Middleware;
+use GuzzleHttp\Exception\TransferException;
 use SandeepV\WrapsplashPHP\Config\Endpoints;
 use SandeepV\WrapsplashPHP\Enums\PhotoOrder;
 use SandeepV\WrapsplashPHP\Enums\PhotoOrientation;
 
 class WrapSplash
 {
-    private string $accessToken = '';
-    private string $secretKey = '';
-    private string $redirectUri = '';
-    private string $code = '';
-    private string $bearerToken = '';
-    private int $timeout = 10000;
-    private int $retries = 2;
-    private int $retryDelayMs = 100;
-    private array $headers = [];
+    private ?Configuration $config = null;
+    private string $authHeader = '';
     private ?Client $httpClient = null;
     private bool $initialized = false;
 
     private const GRANT_TYPE = 'authorization_code';
+    private const RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
 
     public function __construct(?Client $httpClient = null)
     {
@@ -48,31 +41,14 @@ class WrapSplash
 
         $config->validate();
 
-        $this->timeout = $config->timeout > 0 ? $config->timeout : 10000;
-        $this->retries = $config->retries >= 0 ? $config->retries : 2;
-        $this->retryDelayMs = $config->retryDelayMs >= 0 ? $config->retryDelayMs : 100;
-
-        $this->headers = [
-            'Content-Type' => 'application/json',
-            'X-Requested-With' => 'WrapSplashPHP',
-        ];
+        $this->config = $config;
 
         if ($config->bearerToken !== null) {
-            $this->bearerToken = $config->bearerToken;
-            $this->headers['Authorization'] = 'Bearer ' . $config->bearerToken;
-            $this->headers['X-WrapSplash-Header'] = $this->computeHash($config->bearerToken);
-            $this->initialized = true;
-            $this->ensureHttpClient();
-            return;
+            $this->authHeader = 'Bearer ' . $config->bearerToken;
+        } else {
+            $this->authHeader = 'Client-ID ' . $config->accessToken;
         }
 
-        $this->accessToken = $config->accessToken ?? '';
-        $this->secretKey = $config->secretKey ?? '';
-        $this->redirectUri = $config->redirectUri ?? '';
-        $this->code = $config->code ?? '';
-
-        $this->headers['Authorization'] = 'Client-ID ' . $this->accessToken;
-        $this->headers['X-WrapSplash-Header'] = $this->computeHash($this->accessToken);
         $this->initialized = true;
         $this->ensureHttpClient();
     }
@@ -132,18 +108,23 @@ class WrapSplash
     public function generateBearerToken(): array
     {
         $this->ensureInitialized();
-        $this->validateRequired($this->accessToken, 'access_key');
-        $this->validateRequired($this->secretKey, 'secret_key');
-        $this->validateRequired($this->redirectUri, 'redirect_uri');
-        $this->validateRequired($this->code, 'code');
+        $this->validateRequired($this->config->accessToken, 'access_key');
+        $this->validateRequired($this->config->secretKey, 'secret_key');
+        $this->validateRequired($this->config->redirectUri, 'redirect_uri');
+        $this->validateRequired($this->config->code, 'code');
 
-        return $this->fetchUrl(Endpoints::BEARER_TOKEN_URL, 'POST', [
-            'client_id' => $this->accessToken,
-            'client_secret' => $this->secretKey,
-            'redirect_uri' => $this->redirectUri,
-            'code' => $this->code,
-            'grant_type' => self::GRANT_TYPE,
-        ]);
+        return $this->fetchUrl(
+            Endpoints::BEARER_TOKEN_URL,
+            'POST',
+            [],
+            [
+                'client_id' => $this->config->accessToken,
+                'client_secret' => $this->config->secretKey,
+                'redirect_uri' => $this->config->redirectUri,
+                'code' => $this->config->code,
+                'grant_type' => self::GRANT_TYPE,
+            ],
+        );
     }
 
     // ================================================================
@@ -157,7 +138,7 @@ class WrapSplash
     public function getCurrentUserProfile(): array
     {
         $this->ensureInitialized();
-        return $this->fetchUrl(self::api(Endpoints::CURRENT_USER_PROFILE), 'GET');
+        return $this->fetchUrl(Endpoints::CURRENT_USER_PROFILE, 'GET');
     }
 
     /**
@@ -168,7 +149,7 @@ class WrapSplash
     public function updateCurrentUserProfile(array $params = []): array
     {
         $this->ensureInitialized();
-        return $this->fetchUrl(self::api(Endpoints::UPDATE_CURRENT_USER_PROFILE), 'PUT', $params);
+        return $this->fetchUrl(Endpoints::UPDATE_CURRENT_USER_PROFILE, 'PUT', [], $params);
     }
 
     // ================================================================
@@ -184,7 +165,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($username, 'username');
 
-        return $this->fetchUrl(self::api(Endpoints::USERS_PUBLIC_PROFILE) . $username, 'GET', [
+        return $this->fetchUrl(Endpoints::USERS_PUBLIC_PROFILE . $username, 'GET', [
             'w' => $width,
             'h' => $height,
         ]);
@@ -199,7 +180,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($username, 'username');
 
-        return $this->fetchUrl(self::api(self::replaceUsername(Endpoints::USERS_PORTFOLIO, $username)), 'GET');
+        return $this->fetchUrl(self::replaceUsername(Endpoints::USERS_PORTFOLIO, $username), 'GET');
     }
 
     /**
@@ -218,13 +199,13 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($username, 'username');
 
-        return $this->fetchUrl(self::api(self::replaceUsername(Endpoints::USERS_PHOTOS, $username)), 'GET', [
+        return $this->fetchUrl(self::replaceUsername(Endpoints::USERS_PHOTOS, $username), 'GET', [
             'page' => $page,
             'per_page' => $perPage,
             'order_by' => ($orderBy?->value) ?? 'latest',
-            'stats' => $stats ?? false,
-            'resolution' => $resolution ?? 'days',
-            'quantity' => $quantity ?? 30,
+            'stats' => $stats,
+            'resolution' => $resolution,
+            'quantity' => $quantity,
         ]);
     }
 
@@ -241,7 +222,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($username, 'username');
 
-        return $this->fetchUrl(self::api(self::replaceUsername(Endpoints::USERS_LIKED_PHOTOS, $username)), 'GET', [
+        return $this->fetchUrl(self::replaceUsername(Endpoints::USERS_LIKED_PHOTOS, $username), 'GET', [
             'page' => $page,
             'per_page' => $perPage,
             'order_by' => ($orderBy?->value) ?? 'latest',
@@ -257,7 +238,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($username, 'username');
 
-        return $this->fetchUrl(self::api(self::replaceUsername(Endpoints::USERS_COLLECTIONS, $username)), 'GET', [
+        return $this->fetchUrl(self::replaceUsername(Endpoints::USERS_COLLECTIONS, $username), 'GET', [
             'page' => $page,
             'per_page' => $perPage,
         ]);
@@ -272,9 +253,9 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($username, 'username');
 
-        return $this->fetchUrl(self::api(self::replaceUsername(Endpoints::USERS_STATISTICS, $username)), 'GET', [
-            'resolution' => $resolution ?? 'days',
-            'quantity' => $quantity ?? 30,
+        return $this->fetchUrl(self::replaceUsername(Endpoints::USERS_STATISTICS, $username), 'GET', [
+            'resolution' => $resolution,
+            'quantity' => $quantity,
         ]);
     }
 
@@ -289,7 +270,7 @@ class WrapSplash
     public function listPhotos(int $page = 1, int $perPage = 10, ?PhotoOrder $orderBy = null): array
     {
         $this->ensureInitialized();
-        return $this->fetchUrl(self::api(Endpoints::LIST_PHOTOS), 'GET', [
+        return $this->fetchUrl(Endpoints::LIST_PHOTOS, 'GET', [
             'page' => $page,
             'per_page' => $perPage,
             'order_by' => ($orderBy?->value) ?? 'latest',
@@ -303,7 +284,7 @@ class WrapSplash
     public function listCuratedPhotos(int $page = 1, int $perPage = 10, ?PhotoOrder $orderBy = null): array
     {
         $this->ensureInitialized();
-        return $this->fetchUrl(self::api(Endpoints::LIST_CURATED_PHOTOS), 'GET', [
+        return $this->fetchUrl(Endpoints::LIST_CURATED_PHOTOS, 'GET', [
             'page' => $page,
             'per_page' => $perPage,
             'order_by' => ($orderBy?->value) ?? 'latest',
@@ -319,7 +300,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::GET_A_PHOTO, $id)), 'GET', [
+        return $this->fetchUrl(self::replaceId(Endpoints::GET_A_PHOTO, $id), 'GET', [
             'w' => $width,
             'h' => $height,
             'rect' => $rect,
@@ -342,15 +323,15 @@ class WrapSplash
     ): array {
         $this->ensureInitialized();
 
-        return $this->fetchUrl(self::api(Endpoints::GET_A_RANDOM_PHOTO), 'GET', [
+        return $this->fetchUrl(Endpoints::GET_A_RANDOM_PHOTO, 'GET', [
             'collections' => $collections !== null ? (string) $collections : null,
-            'featured' => $featured ?? false,
+            'featured' => $featured,
             'username' => $username,
             'query' => $query,
             'width' => $width,
             'height' => $height,
-            'orientation' => ($orientation?->value) ?? 'landscape',
-            'count' => $count ?? 1,
+            'orientation' => $orientation?->value,
+            'count' => $count,
         ]);
     }
 
@@ -363,9 +344,9 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::GET_A_PHOTO_STATISTICS, $id)), 'GET', [
-            'resolution' => $resolution ?? 'days',
-            'quantity' => $quantity ?? 30,
+        return $this->fetchUrl(self::replaceId(Endpoints::GET_A_PHOTO_STATISTICS, $id), 'GET', [
+            'resolution' => $resolution,
+            'quantity' => $quantity,
         ]);
     }
 
@@ -378,7 +359,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::GET_A_PHOTO_DOWNLOAD_LINK, $id)), 'GET');
+        return $this->fetchUrl(self::replaceId(Endpoints::GET_A_PHOTO_DOWNLOAD_LINK, $id), 'GET');
     }
 
     /**
@@ -399,7 +380,7 @@ class WrapSplash
             'make', 'model', 'exposure_time', 'aperture_value', 'focal_length', 'iso_speed_ratings',
         ]));
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::UPDATE_A_PHOTO, $id)), 'PUT', $params);
+        return $this->fetchUrl(self::replaceId(Endpoints::UPDATE_A_PHOTO, $id), 'PUT', [], $params);
     }
 
     /**
@@ -411,7 +392,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::LIKE_A_PHOTO, $id)), 'POST');
+        return $this->fetchUrl(self::replaceId(Endpoints::LIKE_A_PHOTO, $id), 'POST');
     }
 
     /**
@@ -423,7 +404,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::UNLIKE_A_PHOTO, $id)), 'DELETE');
+        return $this->fetchUrl(self::replaceId(Endpoints::UNLIKE_A_PHOTO, $id), 'DELETE');
     }
 
     // ================================================================
@@ -444,7 +425,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($query, 'query');
 
-        return $this->fetchUrl(self::api(Endpoints::SEARCH_PHOTOS), 'GET', [
+        return $this->fetchUrl(Endpoints::SEARCH_PHOTOS, 'GET', [
             'query' => $query,
             'page' => $page,
             'per_page' => $perPage,
@@ -462,7 +443,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($query, 'query');
 
-        return $this->fetchUrl(self::api(Endpoints::SEARCH_COLLECTIONS), 'GET', [
+        return $this->fetchUrl(Endpoints::SEARCH_COLLECTIONS, 'GET', [
             'query' => $query,
             'page' => $page,
             'per_page' => $perPage,
@@ -478,7 +459,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($query, 'query');
 
-        return $this->fetchUrl(self::api(Endpoints::SEARCH_USERS), 'GET', [
+        return $this->fetchUrl(Endpoints::SEARCH_USERS, 'GET', [
             'query' => $query,
             'page' => $page,
             'per_page' => $perPage,
@@ -496,7 +477,7 @@ class WrapSplash
     public function getStatsTotals(): array
     {
         $this->ensureInitialized();
-        return $this->fetchUrl(self::api(Endpoints::STATS_TOTALS), 'GET');
+        return $this->fetchUrl(Endpoints::STATS_TOTALS, 'GET');
     }
 
     /**
@@ -506,7 +487,7 @@ class WrapSplash
     public function getStatsMonth(): array
     {
         $this->ensureInitialized();
-        return $this->fetchUrl(self::api(Endpoints::STATS_MONTH), 'GET');
+        return $this->fetchUrl(Endpoints::STATS_MONTH, 'GET');
     }
 
     // ================================================================
@@ -520,7 +501,7 @@ class WrapSplash
     public function listCollections(int $page = 1, int $perPage = 10): array
     {
         $this->ensureInitialized();
-        return $this->fetchUrl(self::api(Endpoints::LIST_COLLECTIONS), 'GET', [
+        return $this->fetchUrl(Endpoints::LIST_COLLECTIONS, 'GET', [
             'page' => $page,
             'per_page' => $perPage,
         ]);
@@ -533,7 +514,7 @@ class WrapSplash
     public function listFeaturedCollections(int $page = 1, int $perPage = 10): array
     {
         $this->ensureInitialized();
-        return $this->fetchUrl(self::api(Endpoints::LIST_FEATURED_COLLECTIONS), 'GET', [
+        return $this->fetchUrl(Endpoints::LIST_FEATURED_COLLECTIONS, 'GET', [
             'page' => $page,
             'per_page' => $perPage,
         ]);
@@ -546,7 +527,7 @@ class WrapSplash
     public function listCuratedCollections(int $page = 1, int $perPage = 10): array
     {
         $this->ensureInitialized();
-        return $this->fetchUrl(self::api(Endpoints::LIST_CURATED_COLLECTIONS), 'GET', [
+        return $this->fetchUrl(Endpoints::LIST_CURATED_COLLECTIONS, 'GET', [
             'page' => $page,
             'per_page' => $perPage,
         ]);
@@ -561,7 +542,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::GET_COLLECTION, $id)), 'GET');
+        return $this->fetchUrl(self::replaceId(Endpoints::GET_COLLECTION, $id), 'GET');
     }
 
     /**
@@ -573,7 +554,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::GET_CURATED_COLLECTION, $id)), 'GET');
+        return $this->fetchUrl(self::replaceId(Endpoints::GET_CURATED_COLLECTION, $id), 'GET');
     }
 
     /**
@@ -585,7 +566,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::GET_COLLECTION_PHOTOS, $id)), 'GET', [
+        return $this->fetchUrl(self::replaceId(Endpoints::GET_COLLECTION_PHOTOS, $id), 'GET', [
             'page' => $page,
             'per_page' => $perPage,
         ]);
@@ -600,7 +581,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::GET_CURATED_COLLECTION_PHOTOS, $id)), 'GET', [
+        return $this->fetchUrl(self::replaceId(Endpoints::GET_CURATED_COLLECTION_PHOTOS, $id), 'GET', [
             'page' => $page,
             'per_page' => $perPage,
         ]);
@@ -615,7 +596,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::LIST_RELATED_COLLECTION, $id)), 'GET');
+        return $this->fetchUrl(self::replaceId(Endpoints::LIST_RELATED_COLLECTION, $id), 'GET');
     }
 
     /**
@@ -627,7 +608,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($title, 'title');
 
-        return $this->fetchUrl(self::api(Endpoints::CREATE_NEW_COLLECTION), 'POST', [
+        return $this->fetchUrl(Endpoints::CREATE_NEW_COLLECTION, 'POST', [], [
             'title' => $title,
             'description' => $description,
             'private' => $private,
@@ -644,7 +625,7 @@ class WrapSplash
         $this->validateRequired($id, 'id');
         $this->validateRequired($title, 'title');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::UPDATE_EXISTING_COLLECTION, $id)), 'PUT', [
+        return $this->fetchUrl(self::replaceId(Endpoints::UPDATE_EXISTING_COLLECTION, $id), 'PUT', [], [
             'title' => $title,
             'description' => $description,
             'private' => $private,
@@ -660,7 +641,7 @@ class WrapSplash
         $this->ensureInitialized();
         $this->validateRequired($id, 'id');
 
-        return $this->fetchUrl(self::api(self::replaceId(Endpoints::DELETE_COLLECTION, $id)), 'DELETE');
+        return $this->fetchUrl(self::replaceId(Endpoints::DELETE_COLLECTION, $id), 'DELETE');
     }
 
     /**
@@ -674,8 +655,9 @@ class WrapSplash
         $this->validateRequired($photoId, 'photo_id');
 
         return $this->fetchUrl(
-            self::api(self::replaceCollectionId(Endpoints::ADD_PHOTO_TO_COLLECTION, $collectionId)),
+            self::replaceCollectionId(Endpoints::ADD_PHOTO_TO_COLLECTION, $collectionId),
             'POST',
+            [],
             ['photo_id' => $photoId],
         );
     }
@@ -691,7 +673,7 @@ class WrapSplash
         $this->validateRequired($photoId, 'photo_id');
 
         return $this->fetchUrl(
-            self::api(self::replaceCollectionId(Endpoints::REMOVE_PHOTO_FROM_COLLECTION, $collectionId)),
+            self::replaceCollectionId(Endpoints::REMOVE_PHOTO_FROM_COLLECTION, $collectionId),
             'DELETE',
             ['photo_id' => $photoId],
         );
@@ -700,11 +682,6 @@ class WrapSplash
     // ================================================================
     // Private helpers
     // ================================================================
-
-    private function computeHash(string $value): string
-    {
-        return hash('sha256', $value);
-    }
 
     /**
      * @throws WrapSplashException
@@ -721,20 +698,24 @@ class WrapSplash
         }
     }
 
+    /**
+     * @param array<string, mixed> $params
+     * @return array<string, mixed>
+     */
     private function buildQuery(array $params): array
     {
-        return array_filter($params, fn ($v) => $v !== null && $v !== '' && $v !== false);
+        return array_filter($params, fn($v) => $v !== null && $v !== '' && $v !== false);
     }
 
     /**
-     * @param array<string, mixed> $params
+     * @param array<string, mixed> $data
      * @return array<string, mixed>
      */
     private function flattenNested(string $prefix, array $data, array $allowedKeys): array
     {
         $result = [];
         foreach ($allowedKeys as $key) {
-            if (!empty($data[$key])) {
+            if (isset($data[$key]) && $data[$key] !== null) {
                 $result["{$prefix}[{$key}]"] = $data[$key];
             }
         }
@@ -743,6 +724,7 @@ class WrapSplash
 
     /**
      * @param array<string, mixed> $queryParams
+     * @param array<string, mixed>|null $body
      * @return array<string, mixed>
      * @throws WrapSplashException
      */
@@ -751,14 +733,20 @@ class WrapSplash
         $query = $this->buildQuery($queryParams);
 
         $options = [
-            'query' => $query,
-            'headers' => $this->headers,
+            'headers' => array_merge($this->headers(), [
+                'Authorization' => $this->authHeader,
+            ]),
         ];
+
+        if ($query !== []) {
+            $options['query'] = $query;
+        }
+
         if ($body !== null) {
             $options['json'] = $body;
         }
 
-        $attempts = $this->retries + 1;
+        $attempts = $this->config->retries + 1;
         $lastException = null;
 
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
@@ -766,39 +754,75 @@ class WrapSplash
                 $response = $this->httpClient->request($method, $url, $options);
                 $statusCode = $response->getStatusCode();
 
-                if ($statusCode === 204) {
-                    return [
-                        'status' => 204,
-                        'statusText' => 'No Content',
-                        'message' => 'Content Deleted',
-                    ];
-                }
-
-                if ($statusCode === 403) {
-                    return [
-                        'status' => 403,
-                        'statusText' => 'Forbidden',
-                        'message' => 'Rate Limit Exceeded',
-                    ];
-                }
-
                 $contents = (string) $response->getBody();
                 if ($contents === '') {
-                    return [];
+                    return ['status' => $statusCode];
                 }
 
                 $decoded = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
                 return is_array($decoded) ? $decoded : ['data' => $decoded];
 
+            } catch (TransferException $e) {
+                $statusCode = $this->getStatusCode($e);
+
+                if ($statusCode !== null && $this->isRetryable($statusCode)) {
+                    $lastException = $e;
+                    $retryDelay = $this->calculateRetryDelay($e, $attempt);
+
+                    if ($attempt < $attempts - 1) {
+                        usleep($retryDelay * 1000);
+                        continue;
+                    }
+                }
+
+                throw $this->createWrapSplashException($e);
             } catch (GuzzleException $e) {
                 $lastException = $e;
-                if ($attempt < $attempts - 1 && $this->retryDelayMs > 0) {
-                    usleep($this->retryDelayMs * 1000);
+
+                if ($attempt < $attempts - 1 && $this->config->retryDelayMs > 0) {
+                    usleep($this->config->retryDelayMs * 1000);
+                    continue;
                 }
+
+                throw $this->createWrapSplashException($e);
             }
         }
 
         throw $this->createWrapSplashException($lastException);
+    }
+
+    private function isRetryable(int $statusCode): bool
+    {
+        return in_array($statusCode, self::RETRYABLE_STATUS_CODES, true);
+    }
+
+    private function getStatusCode(GuzzleException $e): ?int
+    {
+        if (method_exists($e, 'getResponse')) {
+            $response = $e->getResponse();
+            if ($response !== null) {
+                return $response->getStatusCode();
+            }
+        }
+        return null;
+    }
+
+    private function calculateRetryDelay(GuzzleException $e, int $attempt): int
+    {
+        if (method_exists($e, 'getResponse')) {
+            $response = $e->getResponse();
+            if ($response !== null) {
+                $retryAfter = $response->getHeader('Retry-After');
+                if ($retryAfter !== null && $retryAfter !== '') {
+                    $delay = (int) $retryAfter;
+                    if ($delay > 0) {
+                        return $delay * 1000;
+                    }
+                }
+            }
+        }
+
+        return $this->config->retryDelayMs * (2 ** $attempt);
     }
 
     /**
@@ -829,6 +853,14 @@ class WrapSplash
         );
     }
 
+    private function headers(): array
+    {
+        return [
+            'Content-Type' => 'application/json',
+            'X-Requested-With' => 'WrapSplashPHP',
+        ];
+    }
+
     private function ensureInitialized(): void
     {
         if (!$this->initialized) {
@@ -841,14 +873,9 @@ class WrapSplash
         if ($this->httpClient === null) {
             $this->httpClient = new Client([
                 'base_uri' => Endpoints::API_LOCATION,
-                'timeout' => $this->timeout / 1000,
+                'timeout' => $this->config->timeout / 1000,
             ]);
         }
-    }
-
-    private static function api(string $path): string
-    {
-        return $path;
     }
 
     private static function replaceId(string $path, string $id): string

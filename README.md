@@ -127,7 +127,49 @@ print_r($result);
 ```sh
 composer install
 vendor/bin/phpunit              # Run all tests
-vendor/bin/phpunit --coverage-html coverage/  # Generate coverage report
+vendor/bin/phpunit --coverage-html coverage/html  # Generate HTML coverage report
+vendor/bin/phpunit --coverage-text                # Show coverage in terminal
+```
+
+Or use Composer scripts:
+```sh
+composer test                    # Run all tests
+composer coverage                # Generate HTML + Clover coverage
+composer coverage:text           # Show coverage in terminal
+composer lint                    # Check code style (dry-run)
+composer fix                     # Auto-fix code style
+```
+
+Coverage reports are output to `coverage/` and are git-ignored.
+
+### CI/CD
+
+This project uses **GitHub Actions** for continuous integration and release automation:
+
+- **CI** (`.github/workflows/ci.yml`) — Runs on every push/PR to `main`/`master`:
+  - Tests across PHP 8.1, 8.2, 8.3
+  - Code coverage report (uploaded as artifact)
+  - Code style checks (PHP-CS-Fixer)
+  - Static analysis (PHPStan, if configured)
+
+- **Release** (`.github/workflows/release.yml`) — Triggered on version tags (`v*`):
+  - Validates `composer.json`
+  - Runs tests against the tagged version
+  - Creates a GitHub Release with auto-generated changelog
+
+### Requirements for Coverage
+
+Code coverage requires a coverage driver installed. Install one of:
+
+- [PCOV](https://github.com/krakjoe/pcov) (recommended, faster)
+- [Xdebug](https://xdebug.org/)
+
+```sh
+# PCOV (recommended)
+pecl install pcov
+
+# Or Xdebug
+pecl install xdebug
 ```
 
 ### Dependency

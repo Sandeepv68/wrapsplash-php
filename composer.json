@@ -14,7 +14,8 @@
         "guzzlehttp/guzzle": "^7.0"
     },
     "require-dev": {
-        "phpunit/phpunit": "^10.0"
+        "phpunit/phpunit": "^10.0",
+        "friendsofphp/php-cs-fixer": "^3.0"
     },
     "autoload": {
         "psr-4": {
@@ -25,6 +26,13 @@
         "psr-4": {
             "SandeepV\\WrapsplashPHP\\Tests\\": "tests/"
         }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "coverage": "phpunit --coverage-html coverage/html --coverage-clover coverage/clover.xml",
+        "coverage:text": "phpunit --coverage-text",
+        "lint": "php-cs-fixer fix --dry-run --diff",
+        "fix": "php-cs-fixer fix"
     },
     "keywords": ["unsplash", "api", "photos", "images", "wrapper"],
     "minimum-stability": "stable",

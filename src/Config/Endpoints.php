@@ -55,8 +55,4 @@ final class Endpoints
     public const DELETE_COLLECTION = 'collections/{id}';
     public const ADD_PHOTO_TO_COLLECTION = 'collections/{collection_id}/add';
     public const REMOVE_PHOTO_FROM_COLLECTION = 'collections/{collection_id}/remove';
-
-    private function __construct()
-    {
-    }
 }

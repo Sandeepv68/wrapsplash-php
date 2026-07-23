@@ -5,12 +5,13 @@ declare(strict_types=1);
 namespace SandeepV\WrapsplashPHP\Tests;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\ServerException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
-use GuzzleHttp\Psr7\Response;
-use GuzzleHttp\Exception\ServerException;
 use GuzzleHttp\Psr7\Request;
+use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\TestCase;
 use SandeepV\WrapsplashPHP\Configuration;
 use SandeepV\WrapsplashPHP\Enums\PhotoOrder;
@@ -61,7 +62,6 @@ class WrapSplashTest extends TestCase
             null,
             function ($request) use (&$captured) {
                 $captured['auth'] = (string) $request->getHeader('Authorization')[0];
-                $captured['wrap'] = (string) $request->getHeader('X-WrapSplash-Header')[0];
             }
         ));
 
@@ -71,7 +71,6 @@ class WrapSplashTest extends TestCase
         $client->getCurrentUserProfile();
 
         $this->assertEquals('Bearer my-token-123', $captured['auth']);
-        $this->assertEquals(hash('sha256', 'my-token-123'), $captured['wrap']);
     }
 
     public function testInitWithCredentialsSetsClientIdHeader(): void
@@ -84,7 +83,6 @@ class WrapSplashTest extends TestCase
             null,
             function ($request) use (&$captured) {
                 $captured['auth'] = (string) $request->getHeader('Authorization')[0];
-                $captured['wrap'] = (string) $request->getHeader('X-WrapSplash-Header')[0];
             }
         ));
 
@@ -99,7 +97,6 @@ class WrapSplashTest extends TestCase
         $client->getCurrentUserProfile();
 
         $this->assertEquals('Client-ID my-access-key', $captured['auth']);
-        $this->assertEquals(hash('sha256', 'my-access-key'), $captured['wrap']);
     }
 
     public function testInitThrowsOnMissingCredentials(): void
@@ -120,7 +117,7 @@ class WrapSplashTest extends TestCase
 
     public function testWithBearerTokenFactoryMethod(): void
     {
-        $mock = new MockHandler([new Response(200, [], '{"ok":true}')]);
+        $mock = new MockHandler([new Response(200, [], '{"id":"u1"}')]);
         $handler = HandlerStack::create($mock);
 
         $captured = [];
@@ -128,17 +125,27 @@ class WrapSplashTest extends TestCase
             null,
             function ($request) use (&$captured) {
                 $captured['auth'] = (string) $request->getHeader('Authorization')[0];
-                $captured['wrap'] = (string) $request->getHeader('X-WrapSplash-Header')[0];
             }
         ));
 
         $httpClient = new Client(['handler' => $handler]);
-        $client = new WrapSplash($httpClient);
-        $client->init(new Configuration(bearerToken: 'factory-token'));
-        $client->getCurrentUserProfile();
+        $client = WrapSplash::withBearerToken('factory-token', 5000, 1, 50);
+        $this->assertInstanceOf(WrapSplash::class, $client);
 
-        $this->assertEquals('Bearer factory-token', $captured['auth']);
-        $this->assertEquals(hash('sha256', 'factory-token'), $captured['wrap']);
+        $client2 = WrapSplash::withBearerToken('factory-token');
+        $this->assertInstanceOf(WrapSplash::class, $client2);
+    }
+
+    public function testWithCredentialsFactoryMethod(): void
+    {
+        $client = WrapSplash::withCredentials(
+            accessToken: 'fac-access',
+            secretKey: 'fac-secret',
+            redirectUri: 'https://example.com',
+            code: 'fac-code',
+            timeout: 5000,
+        );
+        $this->assertInstanceOf(WrapSplash::class, $client);
     }
 
     public function testMethodThrowsWhenNotInitialized(): void
@@ -147,6 +154,52 @@ class WrapSplashTest extends TestCase
         $this->expectExceptionMessage('Client not initialized');
         $client = new WrapSplash();
         $client->getCurrentUserProfile();
+    }
+
+    // ================================================================
+    // Configuration validation tests
+    // ================================================================
+
+    public function testNegativeTimeoutThrows(): void
+    {
+        $this->expectException(WrapSplashException::class);
+        $this->expectExceptionMessage('Timeout must be a positive integer');
+        new Configuration(bearerToken: 'tok', timeout: -1);
+    }
+
+    public function testZeroTimeoutThrows(): void
+    {
+        $this->expectException(WrapSplashException::class);
+        $this->expectExceptionMessage('Timeout must be a positive integer');
+        new Configuration(bearerToken: 'tok', timeout: 0);
+    }
+
+    public function testNegativeRetriesThrows(): void
+    {
+        $this->expectException(WrapSplashException::class);
+        $this->expectExceptionMessage('Retries must be a non-negative integer');
+        new Configuration(bearerToken: 'tok', retries: -1);
+    }
+
+    public function testNegativeRetryDelayThrows(): void
+    {
+        $this->expectException(WrapSplashException::class);
+        $this->expectExceptionMessage('Retry delay must be a non-negative integer');
+        new Configuration(bearerToken: 'tok', retryDelayMs: -1);
+    }
+
+    public function testZeroRetriesIsValid(): void
+    {
+        $config = new Configuration(bearerToken: 'tok', retries: 0);
+        $this->assertEquals(0, $config->retries);
+    }
+
+    public function testEmptyStringCredentialsThrow(): void
+    {
+        $this->expectException(WrapSplashException::class);
+        $this->expectExceptionMessage('Missing required credentials');
+        $client = new WrapSplash();
+        $client->init(new Configuration(accessToken: 'key', secretKey: '', redirectUri: 'uri', code: 'c'));
     }
 
     // ================================================================
@@ -185,6 +238,20 @@ class WrapSplashTest extends TestCase
         $client->createCollection('');
     }
 
+    public function testEmptyCollectionIdThrows(): void
+    {
+        $this->expectException(WrapSplashException::class);
+        $client = $this->createClient([]);
+        $client->addPhotoToCollection('', 'photo1');
+    }
+
+    public function testEmptyPhotoIdThrows(): void
+    {
+        $this->expectException(WrapSplashException::class);
+        $client = $this->createClient([]);
+        $client->addPhotoToCollection('col1', '');
+    }
+
     // ================================================================
     // Current User tests
     // ================================================================
@@ -199,9 +266,23 @@ class WrapSplashTest extends TestCase
 
     public function testUpdateCurrentUserProfile(): void
     {
-        $client = $this->createClient([new Response(200, [], '{"username":"updated"}')]);
+        $mock = new MockHandler([new Response(200, [], '{"username":"updated"}')]);
+        $handler = HandlerStack::create($mock);
+
+        $capturedBody = null;
+        $handler->push(Middleware::tap(
+            function ($request) use (&$capturedBody) {
+                $capturedBody = $request->getBody()->getContents();
+            }
+        ));
+
+        $httpClient = new Client(['handler' => $handler]);
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok'));
         $result = $client->updateCurrentUserProfile(['username' => 'updated', 'bio' => 'Hello']);
         $this->assertEquals('updated', $result['username']);
+        $this->assertStringContainsString('"username":"updated"', $capturedBody);
+        $this->assertStringContainsString('"bio":"Hello"', $capturedBody);
     }
 
     // ================================================================
@@ -235,6 +316,28 @@ class WrapSplashTest extends TestCase
 
         $this->assertStringContainsString('w=200', $capturedUrl);
         $this->assertStringContainsString('h=300', $capturedUrl);
+    }
+
+    public function testGetPublicProfileOmitsNullDimensions(): void
+    {
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        $handler = HandlerStack::create($mock);
+
+        $capturedUrl = '';
+        $handler->push(Middleware::tap(
+            null,
+            function ($request) use (&$capturedUrl) {
+                $capturedUrl = (string) $request->getUri();
+            }
+        ));
+
+        $httpClient = new Client(['handler' => $handler]);
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok'));
+        $client->getPublicProfile('alice');
+
+        $this->assertStringNotContainsString('w=', $capturedUrl);
+        $this->assertStringNotContainsString('h=', $capturedUrl);
     }
 
     public function testGetUserPortfolio(): void
@@ -350,6 +453,29 @@ class WrapSplashTest extends TestCase
         $this->assertEquals('rand1', $result['id']);
     }
 
+    public function testGetRandomPhotoOmitsNullDefaults(): void
+    {
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        $handler = HandlerStack::create($mock);
+
+        $capturedUrl = '';
+        $handler->push(Middleware::tap(
+            null,
+            function ($request) use (&$capturedUrl) {
+                $capturedUrl = (string) $request->getUri();
+            }
+        ));
+
+        $httpClient = new Client(['handler' => $handler]);
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok'));
+        $client->getRandomPhoto();
+
+        $this->assertStringNotContainsString('featured=', $capturedUrl);
+        $this->assertStringNotContainsString('orientation=', $capturedUrl);
+        $this->assertStringNotContainsString('count=', $capturedUrl);
+    }
+
     public function testGetRandomPhotoWithParams(): void
     {
         $mock = new MockHandler([new Response(200, [], '{}')]);
@@ -406,10 +532,10 @@ class WrapSplashTest extends TestCase
         $mock = new MockHandler([new Response(200, [], '{}')]);
         $handler = HandlerStack::create($mock);
 
-        $capturedUrl = '';
+        $capturedBody = null;
         $handler->push(Middleware::tap(
-            function ($request) use (&$capturedUrl) {
-                $capturedUrl = (string) $request->getUri();
+            function ($request) use (&$capturedBody) {
+                $capturedBody = $request->getBody()->getContents();
             }
         ));
 
@@ -427,13 +553,36 @@ class WrapSplashTest extends TestCase
             'model' => 'EOS R5',
         ]);
 
-        $this->assertStringContainsString('location%5Blatitude%5D=40.7128', $capturedUrl);
-        $this->assertStringContainsString('location%5Blongitude%5D=-74', $capturedUrl);
-        $this->assertStringContainsString('location%5Bname%5D=New', $capturedUrl);
-        $this->assertStringContainsString('location%5Bcity%5D=New', $capturedUrl);
-        $this->assertStringContainsString('location%5Bcountry%5D=US', $capturedUrl);
-        $this->assertStringContainsString('exif%5Bmake%5D=Canon', $capturedUrl);
-        $this->assertStringContainsString('exif%5Bmodel%5D=EOS', $capturedUrl);
+        $this->assertStringContainsString('"location[latitude]"', $capturedBody);
+        $this->assertStringContainsString('40.7128', $capturedBody);
+        $this->assertStringContainsString('"exif[make]"', $capturedBody);
+        $this->assertStringContainsString('"Canon"', $capturedBody);
+    }
+
+    public function testUpdatePhotoWithZeroCoordinates(): void
+    {
+        $mock = new MockHandler([new Response(200, [], '{}')]);
+        $handler = HandlerStack::create($mock);
+
+        $capturedBody = null;
+        $handler->push(Middleware::tap(
+            function ($request) use (&$capturedBody) {
+                $capturedBody = $request->getBody()->getContents();
+            }
+        ));
+
+        $httpClient = new Client(['handler' => $handler]);
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok'));
+        $client->updatePhoto('photo1', [
+            'latitude' => 0.0,
+            'longitude' => 0.0,
+            'name' => 'Null Island',
+        ], []);
+
+        $this->assertStringContainsString('"location[latitude]":0', $capturedBody);
+        $this->assertStringContainsString('"location[longitude]":0', $capturedBody);
+        $this->assertStringContainsString('"location[name]":"Null Island"', $capturedBody);
     }
 
     public function testLikePhoto(): void
@@ -459,6 +608,27 @@ class WrapSplashTest extends TestCase
         $client = $this->createClient([new Response(200, [], '{"results":[{"id":"s1"}],"total":1}')]);
         $result = $client->searchPhotos('mountains');
         $this->assertEquals(1, $result['total']);
+    }
+
+    public function testSearchPhotosWithOrientation(): void
+    {
+        $mock = new MockHandler([new Response(200, [], '{"results":[]}')]);
+        $handler = HandlerStack::create($mock);
+
+        $capturedUrl = '';
+        $handler->push(Middleware::tap(
+            null,
+            function ($request) use (&$capturedUrl) {
+                $capturedUrl = (string) $request->getUri();
+            }
+        ));
+
+        $httpClient = new Client(['handler' => $handler]);
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok'));
+        $client->searchPhotos('cars', orientation: PhotoOrientation::SQUARE);
+
+        $this->assertStringContainsString('orientation=squarish', $capturedUrl);
     }
 
     public function testSearchCollections(): void
@@ -555,16 +725,43 @@ class WrapSplashTest extends TestCase
 
     public function testCreateCollection(): void
     {
-        $client = $this->createClient([new Response(200, [], '{"id":"newcol","title":"New Collection"}')]);
+        $mock = new MockHandler([new Response(200, [], '{"id":"newcol","title":"New Collection"}')]);
+        $handler = HandlerStack::create($mock);
+
+        $capturedBody = null;
+        $handler->push(Middleware::tap(
+            function ($request) use (&$capturedBody) {
+                $capturedBody = $request->getBody()->getContents();
+            }
+        ));
+
+        $httpClient = new Client(['handler' => $handler]);
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok'));
         $result = $client->createCollection('New Collection', 'A description', true);
         $this->assertEquals('New Collection', $result['title']);
+        $this->assertStringContainsString('"title":"New Collection"', $capturedBody);
+        $this->assertStringContainsString('"private":true', $capturedBody);
     }
 
     public function testUpdateCollection(): void
     {
-        $client = $this->createClient([new Response(200, [], '{"id":"col1","title":"Updated"}')]);
+        $mock = new MockHandler([new Response(200, [], '{"id":"col1","title":"Updated"}')]);
+        $handler = HandlerStack::create($mock);
+
+        $capturedBody = null;
+        $handler->push(Middleware::tap(
+            function ($request) use (&$capturedBody) {
+                $capturedBody = $request->getBody()->getContents();
+            }
+        ));
+
+        $httpClient = new Client(['handler' => $handler]);
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok'));
         $result = $client->updateCollection('col1', 'Updated', 'New desc', false);
         $this->assertEquals('Updated', $result['title']);
+        $this->assertStringContainsString('"title":"Updated"', $capturedBody);
     }
 
     public function testDeleteCollection(): void
@@ -576,9 +773,22 @@ class WrapSplashTest extends TestCase
 
     public function testAddPhotoToCollection(): void
     {
-        $client = $this->createClient([new Response(200, [], '{"id":"col1","photo_id":"p1"}')]);
+        $mock = new MockHandler([new Response(200, [], '{"id":"col1","photo_id":"p1"}')]);
+        $handler = HandlerStack::create($mock);
+
+        $capturedBody = null;
+        $handler->push(Middleware::tap(
+            function ($request) use (&$capturedBody) {
+                $capturedBody = $request->getBody()->getContents();
+            }
+        ));
+
+        $httpClient = new Client(['handler' => $handler]);
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok'));
         $result = $client->addPhotoToCollection('col1', 'p1');
         $this->assertArrayHasKey('photo_id', $result);
+        $this->assertStringContainsString('"photo_id":"p1"', $capturedBody);
     }
 
     public function testRemovePhotoFromCollection(): void
@@ -597,10 +807,14 @@ class WrapSplashTest extends TestCase
         $mock = new MockHandler([new Response(200, [], '{"access_token":"new-token","token_type":"bearer"}')]);
         $handler = HandlerStack::create($mock);
 
+        $capturedBody = null;
         $capturedUrl = '';
+        $capturedMethod = '';
         $handler->push(Middleware::tap(
-            function ($request) use (&$capturedUrl) {
+            function ($request) use (&$capturedBody, &$capturedUrl, &$capturedMethod) {
+                $capturedBody = $request->getBody()->getContents();
                 $capturedUrl = (string) $request->getUri();
+                $capturedMethod = $request->getMethod();
             }
         ));
 
@@ -615,11 +829,28 @@ class WrapSplashTest extends TestCase
         $result = $client->generateBearerToken();
 
         $this->assertEquals('new-token', $result['access_token']);
-        $this->assertStringContainsString('client_id=access-key', $capturedUrl);
-        $this->assertStringContainsString('client_secret=secret-key', $capturedUrl);
-        $this->assertStringContainsString('redirect_uri=https%3A%2F%2Fexample.com%2Fcallback', $capturedUrl);
-        $this->assertStringContainsString('code=auth-code-123', $capturedUrl);
-        $this->assertStringContainsString('grant_type=authorization_code', $capturedUrl);
+        $this->assertStringContainsString('"client_id":"access-key"', $capturedBody);
+        $this->assertStringContainsString('"client_secret":"secret-key"', $capturedBody);
+        $this->assertStringContainsString('redirect_uri', $capturedBody);
+        $this->assertStringContainsString('example.com', $capturedBody);
+        $this->assertStringContainsString('callback', $capturedBody);
+        $this->assertStringContainsString('"code":"auth-code-123"', $capturedBody);
+        $this->assertStringContainsString('"grant_type":"authorization_code"', $capturedBody);
+        $this->assertStringNotContainsString('client_secret', $capturedUrl);
+        $this->assertStringContainsString('POST', $capturedMethod);
+    }
+
+    public function testGenerateBearerTokenMissingCredentialsThrows(): void
+    {
+        $this->expectException(WrapSplashException::class);
+        $client = new WrapSplash();
+        $client->init(new Configuration(
+            accessToken: 'key',
+            secretKey: null,
+            redirectUri: null,
+            code: null,
+        ));
+        $client->generateBearerToken();
     }
 
     // ================================================================
@@ -645,7 +876,8 @@ class WrapSplashTest extends TestCase
         $client = $this->createClient([new Response(200, [], '')]);
         $result = $client->getStatsTotals();
         $this->assertIsArray($result);
-        $this->assertEmpty($result);
+        $this->assertArrayHasKey('status', $result);
+        $this->assertEquals(200, $result['status']);
     }
 
     public function testRetryOnFailureThenSuccess(): void
@@ -679,6 +911,101 @@ class WrapSplashTest extends TestCase
 
         $this->expectException(WrapSplashException::class);
         $client->getStatsTotals();
+    }
+
+    public function testClientErrorNotRetried(): void
+    {
+        $mock = new MockHandler([
+            new ServerException('Not Found', new Request('GET', 'test'), new Response(404)),
+            new Response(200, [], '{"ok":true}'),
+        ]);
+        $handler = HandlerStack::create($mock);
+        $httpClient = new Client(['handler' => $handler]);
+
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok', retries: 2, retryDelayMs: 1));
+
+        try {
+            $client->getStatsTotals();
+            $this->fail('Expected WrapSplashException');
+        } catch (WrapSplashException $e) {
+            $this->assertEquals(404, $e->getCode());
+        }
+    }
+
+    public function testZeroRetriesMakesSingleAttempt(): void
+    {
+        $error = new ServerException('Error', new Request('GET', 'test'), new Response(500));
+        $mock = new MockHandler([$error]);
+        $handler = HandlerStack::create($mock);
+        $httpClient = new Client(['handler' => $handler]);
+
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok', retries: 0, retryDelayMs: 1));
+
+        try {
+            $client->getStatsTotals();
+            $this->fail('Expected WrapSplashException');
+        } catch (WrapSplashException $e) {
+            $this->assertEquals(500, $e->getCode());
+        }
+    }
+
+    public function testConnectionExceptionRetriedThenThrown(): void
+    {
+        $mock = new MockHandler([
+            new ConnectException('Connection refused', new Request('GET', 'test')),
+            new ConnectException('Connection refused', new Request('GET', 'test')),
+        ]);
+        $handler = HandlerStack::create($mock);
+        $httpClient = new Client(['handler' => $handler]);
+
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok', retries: 1, retryDelayMs: 1));
+
+        $this->expectException(WrapSplashException::class);
+        $client->getStatsTotals();
+    }
+
+    public function testRetryAfterHeaderRespected(): void
+    {
+        $mock = new MockHandler([
+            new ServerException('Rate Limited', new Request('GET', 'test'), new Response(429, ['Retry-After' => '0'])),
+            new Response(200, [], '{"ok":true}'),
+        ]);
+        $handler = HandlerStack::create($mock);
+        $httpClient = new Client(['handler' => $handler]);
+
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok', retries: 1));
+
+        $result = $client->getStatsTotals();
+        $this->assertTrue($result['ok']);
+    }
+
+    public function testWrapSplashExceptionNotWrappedTwice(): void
+    {
+        $directException = new WrapSplashException('Direct error', 422);
+        $mock = new MockHandler([$directException]);
+        $handler = HandlerStack::create($mock);
+        $httpClient = new Client(['handler' => $handler]);
+
+        $client = new WrapSplash($httpClient);
+        $client->init(new Configuration(bearerToken: 'tok', retries: 0));
+
+        try {
+            $client->getStatsTotals();
+            $this->fail('Expected WrapSplashException');
+        } catch (WrapSplashException $e) {
+            $this->assertSame($directException, $e);
+        }
+    }
+
+    public function testJsonResponseWrappedInDataKey(): void
+    {
+        $client = $this->createClient([new Response(200, [], '"just a string"')]);
+        $result = $client->getStatsTotals();
+        $this->assertEquals('just a string', $result['data']);
     }
 
     // ================================================================

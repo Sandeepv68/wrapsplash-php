@@ -1,0 +1,20 @@
+/ export-ignore
+/.editorconfig
+/.github
+/.gitattributes
+/.gitignore
+/.php-cs-fixer.php
+/.php-cs-fixer.cache
+/.phpunit.result.cache
+/.phpunit.cache/
+/composer.lock
+/composer.phar
+/coverage/
+/phpunit.xml
+/tests/
+/LICENSE
+/README.md
+/CHANGELOG.md
+/CONTRIBUTING.md
+/CODE_OF_CONDUCT.md
+/SECURITY.md

@@ -6,6 +6,9 @@ namespace SandeepV\WrapsplashPHP;
 
 final readonly class Configuration
 {
+    /**
+     * @throws WrapSplashException
+     */
     public function __construct(
         public ?string $bearerToken = null,
         public ?string $accessToken = null,
@@ -16,6 +19,15 @@ final readonly class Configuration
         public int $retries = 2,
         public int $retryDelayMs = 100,
     ) {
+        if ($this->timeout <= 0) {
+            throw new WrapSplashException('Timeout must be a positive integer (ms).');
+        }
+        if ($this->retries < 0) {
+            throw new WrapSplashException('Retries must be a non-negative integer.');
+        }
+        if ($this->retryDelayMs < 0) {
+            throw new WrapSplashException('Retry delay must be a non-negative integer (ms).');
+        }
     }
 
     /**
