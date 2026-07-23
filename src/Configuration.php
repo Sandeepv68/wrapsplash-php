@@ -4,20 +4,20 @@ declare(strict_types=1);
 
 namespace SandeepV\WrapsplashPHP;
 
-final readonly class Configuration
+final class Configuration
 {
     /**
      * @throws WrapSplashException
      */
     public function __construct(
-        public ?string $bearerToken = null,
-        public ?string $accessToken = null,
-        public ?string $secretKey = null,
-        public ?string $redirectUri = null,
-        public ?string $code = null,
-        public int $timeout = 10000,
-        public int $retries = 2,
-        public int $retryDelayMs = 100,
+        public readonly ?string $bearerToken = null,
+        public readonly ?string $accessToken = null,
+        public readonly ?string $secretKey = null,
+        public readonly ?string $redirectUri = null,
+        public readonly ?string $code = null,
+        public readonly int $timeout = 10000,
+        public readonly int $retries = 2,
+        public readonly int $retryDelayMs = 100,
     ) {
         if ($this->timeout <= 0) {
             throw new WrapSplashException('Timeout must be a positive integer (ms).');
